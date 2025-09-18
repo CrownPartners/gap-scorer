@@ -1,10 +1,22 @@
-// /api/gap-score.js
 export default async function handler(req, res) {
+  // CORS for your site (use your real domain)
+  res.setHeader("Access-Control-Allow-Origin", "https://YOUR-WEBFLOW-DOMAIN.webflow.io");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-key");
+
+  if (req.method === "OPTIONS") return res.status(200).end(); // preflight
+
   try {
     if (req.method !== "POST") return res.status(405).end();
     if (req.headers["x-key"] !== process.env.WF_SECRET) {
       return res.status(401).json({ error: "unauthorized" });
     }
+
+    // ... keep the rest of your scoring logic unchanged ...
+  } catch {
+    return res.status(500).json({ error: "server_error" });
+  }
+}
 
     const { website, answers = {}, carbon = {}, meta = {} } = req.body || {};
 
