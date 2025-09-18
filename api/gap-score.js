@@ -1,12 +1,33 @@
 // api/gap-score.js
 
+function allowOrigin(origin) {
+  if (!origin) return null;
+  try {
+    const { hostname, protocol } = new URL(origin);
+    const isHttps = protocol === "https:";
+    const endsWith = (s, suffix) => s === suffix || s.endsWith("." + suffix);
+
+    const allowed =
+      (isHttps && (endsWith(hostname, "crownpartners.co.uk") || endsWith(hostname, "webflow.io")));
+
+    return allowed ? origin : null;
+  } catch {
+    return null;
+  }
+}
+
 export default async function handler(req, res) {
-  // --- CORS headers for Webflow (update with your domain) ---
-  res.setHeader("Access-Control-Allow-Origin", "https://crown-partners-ltd.webflow.io");
+  // --- Dynamic CORS (auto-allow *.crownpartners.co.uk and *.webflow.io) ---
+  const origin = req.headers.origin;
+  const allow = allowOrigin(origin);
+  if (allow) {
+    res.setHeader("Access-Control-Allow-Origin", allow);
+    res.setHeader("Vary", "Origin");
+  }
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-key");
 
-  if (req.method === "OPTIONS") return res.status(200).end(); // Handle preflight
+  if (req.method === "OPTIONS") return res.status(200).end(); // preflight OK
 
   try {
     if (req.method !== "POST") return res.status(405).end();
@@ -16,7 +37,7 @@ export default async function handler(req, res) {
 
     const { website, answers = {}, carbon = {}, meta = {} } = req.body || {};
 
-    // ---------- 1) COMPLIANCE ----------
+    // ---------- 1) COMPLIANCE (starter weights – expand later) ----------
     const W = {
       insolvency_clear: 12,
       tax_clear: 10,
@@ -39,17 +60,15 @@ export default async function handler(req, res) {
     }
 
     let c = 0, m = 0;
-    for (const [k, w] of Object.entries(W)) {
-      m += w;
-      if (answers[k]) c += w;
-    }
+    for (const [k, w] of Object.entries(W)) { m += w; if (answers[k]) c += w; }
     if (answers["targets_public_sector"] && !answers["modern_slavery"]) c -= 3;
     const compliancePct = clamp((c / m) * 100);
 
-    // ---------- 2) CARBON ----------
+    // ---------- 2) CARBON GLIDEPATH ----------
     const { baseline_year, baseline_tco2e, current_year, current_tco2e, target_year } = carbon || {};
     const TY = Number(target_year) || 2050;
     const CY = Number(current_year) || new Date().getUTCFullYear();
+
     let carbonPct = answers["crp_ppn"] ? 60 : 45;
     let carbonAdvice = {
       mode: "indicative",
@@ -60,31 +79,34 @@ export default async function handler(req, res) {
     if (num(baseline_tco2e) && Number(baseline_year) > 1990) {
       const base = Number(baseline_tco2e);
       const cur = num(current_tco2e) ? Number(current_tco2e) : base;
-      const yrs = Math.max(TY - CY, 1);
+      const yrs = Math.max(TY - (Number(current_year) || CY), 1);
       const drop = (cur - 0) / yrs;
+
       carbonAdvice = {
         mode: "data",
         baselineYear: Number(baseline_year),
         baselineTCO2e: base,
-        currentYear: CY,
+        currentYear: Number(current_year) || CY,
         currentTCO2e: cur,
         targetYear: TY,
         suggestedAnnualReduction_tCO2e: round(drop),
         suggestedAnnualReduction_percentOfCurrent: round(cur ? (drop / cur) * 100 : 0)
       };
+
       if (answers["crp_ppn"] && answers["scope12_reporting"] && answers["carbon_targets"]) carbonPct = 75;
       else if (answers["crp_ppn"] && (answers["scope12_reporting"] || answers["carbon_targets"])) carbonPct = 62;
       else if (answers["scope12_reporting"]) carbonPct = 55;
       else carbonPct = 45;
     }
 
-    // ---------- 3) PERCEPTION ----------
+    // ---------- 3) WEBSITE PERCEPTION (quick heuristic) ----------
     let perceptionPct = 45;
     let pFlags = [];
     if (website && /^https?:\/\//i.test(website)) {
       try {
         const r = await fetch(website, { redirect: "follow", headers: { "user-agent": "Mozilla/5.0 GapScoreBot" } });
         const html = (await r.text()).toLowerCase();
+
         if (website.startsWith("https://")) perceptionPct += 6; else pFlags.push("no_https");
         if (html.includes("privacy")) perceptionPct += 4; else pFlags.push("privacy_missing");
         if (html.includes("contact")) perceptionPct += 4;
@@ -98,15 +120,12 @@ export default async function handler(req, res) {
     perceptionPct = clamp(perceptionPct);
 
     // ---------- 4) OVERALL ----------
-    const overallPct = Math.round(
-      0.45 * compliancePct +
-      0.35 * perceptionPct +
-      0.20 * carbonPct
-    );
-    const bandLabel = overallPct >= 80 ? "Public-sector ready (indicative)" :
-                      overallPct >= 60 ? "Nearly there — a few gaps" :
-                      overallPct >= 40 ? "Emerging — quick wins available" :
-                                         "Early stage — start with foundations";
+    const overallPct = Math.round(0.45 * compliancePct + 0.35 * perceptionPct + 0.20 * carbonPct);
+    const bandLabel = overallPct >= 80 ? "Public-sector ready (indicative)"
+                    : overallPct >= 60 ? "Nearly there — a few gaps"
+                    : overallPct >= 40 ? "Emerging — quick wins available"
+                    : "Early stage — start with foundations";
+
     const bullets = buildBullets(answers, pFlags).slice(0, 3);
 
     return res.json({
@@ -123,7 +142,7 @@ export default async function handler(req, res) {
   }
 }
 
-// ---------- helpers ----------
+// ---- helpers ----
 const clamp = x => Math.max(0, Math.min(100, Math.round(x)));
 const num = n => n !== null && n !== "" && !isNaN(Number(n));
 const round = n => Math.round(n * 10) / 10;
