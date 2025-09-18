@@ -2,7 +2,7 @@
 
 export default async function handler(req, res) {
   // --- CORS headers for Webflow (update with your domain) ---
-  res.setHeader("Access-Control-Allow-Origin", "https://YOUR-WEBFLOW-DOMAIN.webflow.io");
+  res.setHeader("Access-Control-Allow-Origin", "https://crown-partners-ltd.webflow.io");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-key");
 
