@@ -1,22 +1,21 @@
-// /api/gap-score.js  — Compliance + Website Perception only (no carbon maths)
-
-function allowOrigin(origin) {
-  if (!origin) return null;
-  try {
-    const { hostname, protocol } = new URL(origin);
-    const isHttps = protocol === "https:";
-    const endsWith = (h, s) => h === s || h.endsWith("." + s);
-    return (isHttps && (endsWith(hostname, "crownpartners.co.uk") || endsWith(hostname, "webflow.io"))) ? origin : null;
-  } catch { return null; }
-}
-
 export default async function handler(req, res) {
-  // CORS
-  const allow = allowOrigin(req.headers.origin);
-  if (allow) { res.setHeader("Access-Control-Allow-Origin", allow); res.setHeader("Vary","Origin"); }
-  res.setHeader("Access-Control-Allow-Methods","POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers","Content-Type, x-key");
+  // --- CORS (explicit allow list; no guessing) ---
+  const ORIGIN = req.headers.origin || "";
+  const ALLOW_LIST = new Set([
+    "https://www.crownpartners.co.uk",
+    "https://crown-partners-ltd.webflow.io"
+  ]);
+
+  // Fallback to your main domain if the origin isn't in the list (prevents "no header" case)
+  const ACAO = ALLOW_LIST.has(ORIGIN) ? ORIGIN : "https://www.crownpartners.co.uk";
+  res.setHeader("Access-Control-Allow-Origin", ACAO);
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-key");
+
   if (req.method === "OPTIONS") return res.status(200).end();
+  // --- end CORS ---
+
 
   try {
     if (req.method !== "POST") return res.status(405).end();
