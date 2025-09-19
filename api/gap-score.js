@@ -1,20 +1,24 @@
 export default async function handler(req, res) {
-  // --- CORS (explicit allow list; no guessing) ---
-  const ORIGIN = req.headers.origin || "";
-  const ALLOW_LIST = new Set([
-    "https://www.crownpartners.co.uk",
-    "https://crown-partners-ltd.webflow.io"
-  ]);
+  try {
+    const ORIGIN = req.headers.origin || "";
+    const ALLOW_LIST = new Set([
+      "https://www.crownpartners.co.uk",
+      "https://crown-partners-ltd.webflow.io"
+    ]);
 
-  // Fallback to your main domain if the origin isn't in the list (prevents "no header" case)
-  const ACAO = ALLOW_LIST.has(ORIGIN) ? ORIGIN : "https://www.crownpartners.co.uk";
-  res.setHeader("Access-Control-Allow-Origin", ACAO);
-  res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-key");
+    const ACAO = ALLOW_LIST.has(ORIGIN) ? ORIGIN : "https://www.crownpartners.co.uk";
 
-  if (req.method === "OPTIONS") return res.status(200).end();
-  // --- end CORS ---
+    res.setHeader("Access-Control-Allow-Origin", ACAO);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-key");
+
+    if (req.method === "OPTIONS") {
+      return res.status(200).end();
+    }
+
+    // …rest of your try { scoring logic } catch {…}
+
 
 
   try {
