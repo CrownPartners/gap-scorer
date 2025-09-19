@@ -1,5 +1,6 @@
-// /api/gap-score.js  — Compliance + Website Perception only (no carbon maths)
-// RAG reports errors only; exposes BOTH {large,medium,minor} AND {high,medium,low}
+// /api/gap-score.js — Compliance + Website Perception only (no carbon maths)
+// RAG reports errors only. Exposes BOTH {large,medium,minor} and {high,medium,low}
+// plus legacy {red,amber,green} so your frontend stops showing undefined.
 
 function allowOrigin(origin) {
   if (!origin) return null;
@@ -50,7 +51,6 @@ export default async function handler(req, res) {
 
     for (const k of mandatory) { if (answers[k]) present.push(k); else missingMandatory.push(k); }
     for (const k of expected)  { if (answers[k]) present.push(k); else missingExpected.push(k); }
-    // socialValue ignored
 
     // ---------------- Website perception ----------------
     let perceptionPct = 45;
@@ -92,12 +92,16 @@ export default async function handler(req, res) {
     const medium = missingExpected.length + siteMedium;     // expected + key web
     const minor  = siteMinor;                               // other web hygiene
 
-    // Output both: new scheme + "importance wording"
+    // Expose both new & legacy keys
     const rag = {
-      large, medium, minor,    // raw counts
-      high: large,             // high-importance / hard to fix
-      mediumImportance: medium,// medium-importance
-      low: minor               // low-importance / quick wins
+      large, medium, minor,        // raw counts
+      high: large,                 // high-importance, harder to fix (≈ old "red")
+      mediumImportance: medium,    // medium-importance (≈ old "amber")
+      low: minor,                  // lower-importance, quick wins (≈ old "green")
+      // Legacy for frontend compatibility:
+      red: large,
+      amber: medium,
+      green: minor
     };
 
     // Compliance maths
