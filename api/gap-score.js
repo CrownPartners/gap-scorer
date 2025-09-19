@@ -102,31 +102,107 @@ export default async function handler(req, res) {
     }
     perceptionPct = clamp(perceptionPct);
 
-    // ---------------- Scoring (Compliance + Perception only) ----------------
-    const complianceBase = 100 - (rag.red * 12 + rag.amber * 4); // simple drag model
-    const compliancePct = clamp(complianceBase);
+    // ---------------- Issue-based RAG + Scoring (replace the old scoring block with this) ----------------
 
-    const overallPct = Math.round(0.60 * compliancePct + 0.40 * perceptionPct);
-    const bandLabel =
-      overallPct >= 80 ? "Public-sector ready (indicative)" :
-      overallPct >= 60 ? "Nearly there — a few gaps" :
-      overallPct >= 40 ? "Emerging — quick wins available" :
-                         "Early stage — start with foundations";
+// Map internal keys to friendly labels (used in bullets / issues list)
+const ISSUE_LABEL = (k => ({
+  // Mandatory → RED if missing
+  insolvency_clear: "Company not insolvent",
+  tax_clear: "Up to date with UK tax",
+  no_convictions: "No disqualifying convictions",
+  has_insurance: "Insurance cover (PLI/PI/EL)",
+  dp_ukgdpr: "Data Protection / UK GDPR policy",
+  h_and_s: "Health & Safety policy",
+  modern_slavery: "Modern Slavery statement",
+  anti_bribery: "Anti-bribery & corruption policy",
+  bcp_dr: "Business Continuity / Disaster Recovery plan",
+  edi: "Equality, Diversity & Inclusion policy",
+  whistleblowing: "Whistleblowing policy",
 
-    const bullets = buildBullets(missingMandatory, missingExpected, site.missing).slice(0, 3);
+  // Expected → AMBER if missing (only if that key is present in the form submission)
+  iso_27001: "ISO 27001",
+  ce_plus_or_equiv: "Cyber Essentials Plus (or equivalent)",
+  staff_clearance: "Staff security clearances (BPSS/SC/DV)",
+  iso_9001: "ISO 9001",
+  iso_14001: "ISO 14001",
+  iso_20000_or_itil: "ISO 20000-1 / ITIL",
+  ps_experience: "Public sector delivery experience",
+  case_studies: "Case studies / references",
+  financial_stability: "Financial stability & scalability",
+  registered_portals: "Registered on sourcing portals",
+  bid_process: "Bid/tender management process",
+  framework_awards: "Framework awards history",
+  crp_ppn: "Carbon Reduction Plan (PPN-aligned)",
+  scope12_reporting: "Scope 1 & 2 reporting",
+  carbon_targets: "Carbon reduction targets",
 
-    return res.json({
-      overallPct,
-      bandLabel,
-      bullets,
-      rag,
-      websiteFindings: site,
-      nextStepUrl: "https://www.crownpartners.co.uk/contact"
-    });
-  } catch (e) {
-    return res.status(500).json({ error: "server_error" });
+  // Minor (best-practice) → GREEN if missing (only if present in submission)
+  sustainability_policy: "Sustainability/Environmental policy",
+  supplier_mgmt: "Supplier & subcontractor management policy",
+  sv_reporting: "Social value reporting capability"
+}))[k] || k);
+
+// Build an issues list from missing answers + website misses
+const issues = [];  // { key, label, severity }
+
+// Mandatory → RED (use your existing missingMandatory array)
+for (const k of (missingMandatory || [])) {
+  issues.push({ key: k, label: ISSUE_LABEL(k), severity: "red" });
+}
+
+// Expected → AMBER, but only penalise keys your form actually sent
+for (const k of (missingExpected || [])) {
+  if (Object.prototype.hasOwnProperty.call(answers || {}, k)) {
+    issues.push({ key: k, label: ISSUE_LABEL(k), severity: "amber" });
   }
 }
+
+// Website perception misses → fold into issues
+// By default, Accessibility & CE are AMBER; others are GREEN (minor)
+(site?.missing || []).forEach(labelText => {
+  const sev = (labelText === "Accessibility" || labelText.startsWith("Cyber Essentials"))
+    ? "amber" : "green";
+  const key = `web_${labelText.toLowerCase().replace(/\s+/g, "_")}`;
+  issues.push({ key, label: labelText, severity: sev });
+});
+
+// RAG counts from issues ONLY (we ignore things done correctly)
+const ragIssues = issues.reduce((acc, it) => {
+  acc[it.severity]++; return acc;
+}, { red: 0, amber: 0, green: 0 });
+
+// Severity penalties → compliance %
+const penalty = ragIssues.red * 20 + ragIssues.amber * 8 + ragIssues.green * 2; // tune if you like
+const compliancePct = clamp(100 - penalty);
+
+// Overall score blends compliance & perception
+const overallPct = Math.round(0.60 * compliancePct + 0.40 * perceptionPct);
+
+// Band label
+const bandLabel =
+  overallPct >= 80 ? "Public-sector ready (indicative)" :
+  overallPct >= 60 ? "Nearly there — a few gaps" :
+  overallPct >= 40 ? "Emerging — quick wins available" :
+                     "Early stage — start with foundations";
+
+// Top actions: feed RED/AMBER (most serious first) and site misses into your helper
+const bullets = buildBullets(
+  issues.filter(i => i.severity === "red").map(i => i.key),
+  issues.filter(i => i.severity === "amber").map(i => i.key),
+  site?.missing || []
+).slice(0, 3);
+
+// Respond
+return res.json({
+  overallPct,
+  bandLabel,
+  bullets,
+  rag: ragIssues,              // <- R/A/G now counts ONLY issues (greens = minor issues)
+  issues,                      // <- full list with severities (handy for future UI)
+  websiteFindings: site,
+  nextStepUrl: "https://www.crownpartners.co.uk/contact"
+});
+
 
 function buildBullets(mandMiss, expMiss, siteMiss) {
   const out = [];
