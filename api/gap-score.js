@@ -1,5 +1,5 @@
 // /api/gap-score.js  — Compliance + Website Perception only (no carbon maths)
-// RAG now reports errors only: { large, medium, minor }
+// RAG reports errors only; exposes BOTH {large,medium,minor} AND legacy {red,amber,green}
 
 function allowOrigin(origin) {
   if (!origin) return null;
@@ -12,7 +12,7 @@ function allowOrigin(origin) {
 }
 
 export default async function handler(req, res) {
-  // ---- CORS (same as your working version) ----
+  // ---- CORS (working baseline) ----
   const allow = allowOrigin(req.headers.origin);
   if (allow) { res.setHeader("Access-Control-Allow-Origin", allow); res.setHeader("Vary","Origin"); }
   res.setHeader("Access-Control-Allow-Methods","POST, OPTIONS");
@@ -30,27 +30,17 @@ export default async function handler(req, res) {
 
     // ---------------- Compliance sets (unchanged) ----------------
     const mandatory = [
-      // 1) Legal & Financial
-      "insolvency_clear", "tax_clear", "no_convictions", "has_insurance",
-      // 3) Policies & Procedures (mandatory subset)
-      "dp_ukgdpr", "h_and_s", "modern_slavery", "anti_bribery", "bcp_dr", "edi", "whistleblowing"
+      "insolvency_clear","tax_clear","no_convictions","has_insurance",
+      "dp_ukgdpr","h_and_s","modern_slavery","anti_bribery","bcp_dr","edi","whistleblowing"
     ];
-
     const expected = [
-      // 2) Certifications & Security
       "iso_9001","iso_14001","iso_27001","iso_20000_or_itil","ce_plus_or_equiv","staff_clearance",
-      // 3) Policies & Procedures (expected subset)
       "sustainability_policy","supplier_mgmt",
-      // 4) Social value
       "sv_reporting",
-      // 5) Carbon/Sustainability (checkboxes only)
       "crp_ppn","scope12_reporting","carbon_targets","iso_50001","carbon_trust","sbti",
-      // 6) Commercial & Delivery
       "ps_experience","case_studies","financial_stability",
-      // 7) Framework Engagement
       "registered_portals","bid_process","framework_awards"
     ];
-
     const socialValue = ["sv_employment","sv_community","sv_smes","sv_environment"]; // informational only
 
     // ---------------- Compliance evaluation (no counting greens) ----------------
@@ -58,13 +48,9 @@ export default async function handler(req, res) {
     const missingExpected = [];
     const present = [];
 
-    for (const k of mandatory) {
-      if (answers[k]) { present.push(k); } else { missingMandatory.push(k); }
-    }
-    for (const k of expected) {
-      if (answers[k]) { present.push(k); } else { missingExpected.push(k); }
-    }
-    // socialValue is intentionally ignored for penalties
+    for (const k of mandatory) { if (answers[k]) present.push(k); else missingMandatory.push(k); }
+    for (const k of expected)  { if (answers[k]) present.push(k); else missingExpected.push(k); }
+    // socialValue ignored for penalties
 
     // ---------------- Website perception (unchanged) ----------------
     let perceptionPct = 45;
@@ -88,7 +74,6 @@ export default async function handler(req, res) {
         check("Social proof", h => h.includes("case stud") || h.includes("testimonial") || h.includes("trustpilot") || h.includes("google reviews"));
         check("Modern Slavery link", h => h.includes("modern slavery"));
         check("Cyber Essentials badge", h => h.includes("cyber essentials"));
-
       } catch {
         site.missing.push("Fetched HTML");
         perceptionPct = 40;
@@ -97,21 +82,26 @@ export default async function handler(req, res) {
     perceptionPct = clamp(perceptionPct);
 
     // ---------------- RAG (errors only) + Scoring ----------------
-    // Classify website misses: treat Accessibility & Cyber Essentials as "medium", everything else as "minor"
+    // Website: treat Accessibility & Cyber Essentials as "medium"; everything else "minor"
     const websiteMediumLabels = new Set(["Accessibility", "Cyber Essentials badge"]);
     let siteMedium = 0, siteMinor = 0;
     for (const lbl of site.missing) {
       if (websiteMediumLabels.has(lbl)) siteMedium++; else siteMinor++;
     }
 
-    // New RAG that counts ONLY problems
+    const large  = missingMandatory.length;                 // major gaps
+    const medium = missingExpected.length + siteMedium;     // expected + key web
+    const minor  = siteMinor;                               // other web hygiene
+
+    // Back-compat fields for your UI
     const rag = {
-      large:  missingMandatory.length,               // mandatory not met
-      medium: missingExpected.length + siteMedium,   // expected not met + key web issues
-      minor:  siteMinor                              // other web hygiene issues
+      large, medium, minor,
+      red:   large,   // legacy
+      amber: medium,  // legacy
+      green: minor    // legacy (repurposed: minor issues count)
     };
 
-    // Keep your compliance maths based on compliance gaps only
+    // Compliance maths based on compliance gaps only
     const complianceBase = 100 - (missingMandatory.length * 12 + missingExpected.length * 4);
     const compliancePct = clamp(complianceBase);
 
@@ -128,7 +118,7 @@ export default async function handler(req, res) {
       overallPct,
       bandLabel,
       bullets,
-      rag,                    // <- now { large, medium, minor } (errors only)
+      rag,                    // has both new and legacy keys
       websiteFindings: site,
       nextStepUrl: "https://www.crownpartners.co.uk/contact"
     });
