@@ -1,33 +1,22 @@
-// api/gap-score.js
+// /api/gap-score.js  — Compliance + Website Perception only (no carbon maths)
 
 function allowOrigin(origin) {
   if (!origin) return null;
   try {
     const { hostname, protocol } = new URL(origin);
     const isHttps = protocol === "https:";
-    const endsWith = (s, suffix) => s === suffix || s.endsWith("." + suffix);
-
-    const allowed =
-      (isHttps && (endsWith(hostname, "crownpartners.co.uk") || endsWith(hostname, "webflow.io")));
-
-    return allowed ? origin : null;
-  } catch {
-    return null;
-  }
+    const endsWith = (h, s) => h === s || h.endsWith("." + s);
+    return (isHttps && (endsWith(hostname, "crownpartners.co.uk") || endsWith(hostname, "webflow.io"))) ? origin : null;
+  } catch { return null; }
 }
 
 export default async function handler(req, res) {
-  // --- Dynamic CORS (auto-allow *.crownpartners.co.uk and *.webflow.io) ---
-  const origin = req.headers.origin;
-  const allow = allowOrigin(origin);
-  if (allow) {
-    res.setHeader("Access-Control-Allow-Origin", allow);
-    res.setHeader("Vary", "Origin");
-  }
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-key");
-
-  if (req.method === "OPTIONS") return res.status(200).end(); // preflight OK
+  // CORS
+  const allow = allowOrigin(req.headers.origin);
+  if (allow) { res.setHeader("Access-Control-Allow-Origin", allow); res.setHeader("Vary","Origin"); }
+  res.setHeader("Access-Control-Allow-Methods","POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers","Content-Type, x-key");
+  if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
     if (req.method !== "POST") return res.status(405).end();
@@ -35,126 +24,144 @@ export default async function handler(req, res) {
       return res.status(401).json({ error: "unauthorized" });
     }
 
-    const { website, answers = {}, carbon = {}, meta = {} } = req.body || {};
+    const clamp = (x) => Math.max(0, Math.min(100, Math.round(x)));
+    const { website, answers = {} } = req.body || {};
 
-    // ---------- 1) COMPLIANCE (starter weights – expand later) ----------
-    const W = {
-      insolvency_clear: 12,
-      tax_clear: 10,
-      no_convictions: 8,
-      dp_ukgdpr: 8,
-      bcp_dr: 5,
-      ce_plus: 6
-    };
-    const gates = ["insolvency_clear", "tax_clear", "no_convictions"];
-    for (const g of gates) {
-      if (!answers[g]) {
-        return res.json({
-          overallPct: 22,
-          bandLabel: "Early stage — start with foundations",
-          bullets: ["Resolve legal/financial disqualifiers before bidding."],
-          subscore: { compliancePct: 0, perceptionPct: 0, carbonPct: 0 },
-          carbonAdvice: null
-        });
-      }
+    // ---------------- Compliance RAG (UPDATE THESE LISTS ANYTIME) ----------------
+    // 🔴 Mandatory: unchecked = Red
+    const mandatory = [
+      // 1) Legal & Financial
+      "insolvency_clear", "tax_clear", "no_convictions", "has_insurance",
+      // 3) Policies & Procedures (mandatory subset)
+      "dp_ukgdpr", "h_and_s", "modern_slavery", "anti_bribery", "bcp_dr", "edi", "whistleblowing"
+    ];
+
+    // 🟠 Expected: unchecked = Amber
+    const expected = [
+      // 2) Certifications & Security
+      "iso_9001","iso_14001","iso_27001","iso_20000_or_itil","ce_plus_or_equiv","staff_clearance",
+      // 3) Policies & Procedures (expected subset)
+      "sustainability_policy","supplier_mgmt",
+      // 4) Social value
+      "sv_reporting",
+      // 5) Carbon/Sustainability (checkboxes only)
+      "crp_ppn","scope12_reporting","carbon_targets","iso_50001","carbon_trust","sbti",
+      // 6) Commercial & Delivery
+      "ps_experience","case_studies","financial_stability",
+      // 7) Framework Engagement
+      "registered_portals","bid_process","framework_awards"
+    ];
+
+    // Bonus greens (no penalty if missing) — Social value themes
+    const socialValue = ["sv_employment","sv_community","sv_smes","sv_environment"];
+
+    const rag = { red: 0, amber: 0, green: 0 };
+    const missingMandatory = [];
+    const missingExpected = [];
+    const present = [];
+
+    for (const k of mandatory) {
+      if (answers[k]) { rag.green++; present.push(k); }
+      else { rag.red++; missingMandatory.push(k); }
+    }
+    for (const k of expected) {
+      if (answers[k]) { rag.green++; present.push(k); }
+      else { rag.amber++; missingExpected.push(k); }
+    }
+    for (const k of socialValue) {
+      if (answers[k]) rag.green++; // no penalty if false
     }
 
-    let c = 0, m = 0;
-    for (const [k, w] of Object.entries(W)) { m += w; if (answers[k]) c += w; }
-    if (answers["targets_public_sector"] && !answers["modern_slavery"]) c -= 3;
-    const compliancePct = clamp((c / m) * 100);
-
-    // ---------- 2) CARBON GLIDEPATH ----------
-    const { baseline_year, baseline_tco2e, current_year, current_tco2e, target_year } = carbon || {};
-    const TY = Number(target_year) || 2050;
-    const CY = Number(current_year) || new Date().getUTCFullYear();
-
-    let carbonPct = answers["crp_ppn"] ? 60 : 45;
-    let carbonAdvice = {
-      mode: "indicative",
-      message: "Provide a baseline; proxy ~4.2% absolute Scope 1+2 reduction per year.",
-      suggestedAnnualReduction_percent: 4.2
-    };
-
-    if (num(baseline_tco2e) && Number(baseline_year) > 1990) {
-      const base = Number(baseline_tco2e);
-      const cur = num(current_tco2e) ? Number(current_tco2e) : base;
-      const yrs = Math.max(TY - (Number(current_year) || CY), 1);
-      const drop = (cur - 0) / yrs;
-
-      carbonAdvice = {
-        mode: "data",
-        baselineYear: Number(baseline_year),
-        baselineTCO2e: base,
-        currentYear: Number(current_year) || CY,
-        currentTCO2e: cur,
-        targetYear: TY,
-        suggestedAnnualReduction_tCO2e: round(drop),
-        suggestedAnnualReduction_percentOfCurrent: round(cur ? (drop / cur) * 100 : 0)
-      };
-
-      if (answers["crp_ppn"] && answers["scope12_reporting"] && answers["carbon_targets"]) carbonPct = 75;
-      else if (answers["crp_ppn"] && (answers["scope12_reporting"] || answers["carbon_targets"])) carbonPct = 62;
-      else if (answers["scope12_reporting"]) carbonPct = 55;
-      else carbonPct = 45;
-    }
-
-    // ---------- 3) WEBSITE PERCEPTION (quick heuristic) ----------
+    // ---------------- Website perception (very lightweight) ----------------
     let perceptionPct = 45;
-    let pFlags = [];
+    const site = { present: [], missing: [] };
+
     if (website && /^https?:\/\//i.test(website)) {
       try {
-        const r = await fetch(website, { redirect: "follow", headers: { "user-agent": "Mozilla/5.0 GapScoreBot" } });
+        const r = await fetch(website, {
+          redirect: "follow",
+          headers: { "user-agent": "Mozilla/5.0 GapScoreBot" }
+        });
         const html = (await r.text()).toLowerCase();
 
-        if (website.startsWith("https://")) perceptionPct += 6; else pFlags.push("no_https");
-        if (html.includes("privacy")) perceptionPct += 4; else pFlags.push("privacy_missing");
-        if (html.includes("contact")) perceptionPct += 4;
-        if (html.includes("company number") || html.includes("registered in")) perceptionPct += 6; else pFlags.push("no_company_number");
-        if (html.includes("case stud") || html.includes("testimonial") || html.includes("trustpilot") || html.includes("google reviews")) perceptionPct += 6; else pFlags.push("no_social_proof");
+        const check = (label, fn) => { if (fn(html)) site.present.push(label); else site.missing.push(label); };
+
+        if (website.startsWith("https://")) { perceptionPct += 6; site.present.push("HTTPS"); } else site.missing.push("HTTPS");
+        check("Privacy", h => h.includes("privacy"));
+        check("Cookies", h => h.includes("cookie"));
+        check("Accessibility", h => h.includes("accessibility"));
+        check("Company details", h => h.includes("company number") || h.includes("registered in"));
+        check("Social proof", h => h.includes("case stud") || h.includes("testimonial") || h.includes("trustpilot") || h.includes("google reviews"));
+        check("Modern Slavery link", h => h.includes("modern slavery"));
+        check("Cyber Essentials badge", h => h.includes("cyber essentials"));
+
       } catch {
-        pFlags.push("fetch_failed");
+        site.missing.push("Fetched HTML");
         perceptionPct = 40;
       }
     }
     perceptionPct = clamp(perceptionPct);
 
-    // ---------- 4) OVERALL ----------
-    const overallPct = Math.round(0.45 * compliancePct + 0.35 * perceptionPct + 0.20 * carbonPct);
-    const bandLabel = overallPct >= 80 ? "Public-sector ready (indicative)"
-                    : overallPct >= 60 ? "Nearly there — a few gaps"
-                    : overallPct >= 40 ? "Emerging — quick wins available"
-                    : "Early stage — start with foundations";
+    // ---------------- Scoring (Compliance + Perception only) ----------------
+    const complianceBase = 100 - (rag.red * 12 + rag.amber * 4); // simple drag model
+    const compliancePct = clamp(complianceBase);
 
-    const bullets = buildBullets(answers, pFlags).slice(0, 3);
+    const overallPct = Math.round(0.60 * compliancePct + 0.40 * perceptionPct);
+    const bandLabel =
+      overallPct >= 80 ? "Public-sector ready (indicative)" :
+      overallPct >= 60 ? "Nearly there — a few gaps" :
+      overallPct >= 40 ? "Emerging — quick wins available" :
+                         "Early stage — start with foundations";
+
+    const bullets = buildBullets(missingMandatory, missingExpected, site.missing).slice(0, 3);
 
     return res.json({
       overallPct,
       bandLabel,
       bullets,
-      subscore: { compliancePct, perceptionPct, carbonPct },
-      carbonAdvice,
-      nextStepUrl: "https://YOUR-SITE/thanks"
+      rag,
+      websiteFindings: site,
+      nextStepUrl: "https://www.crownpartners.co.uk/contact"
     });
-
-  } catch {
+  } catch (e) {
     return res.status(500).json({ error: "server_error" });
   }
 }
 
-// ---- helpers ----
-const clamp = x => Math.max(0, Math.min(100, Math.round(x)));
-const num = n => n !== null && n !== "" && !isNaN(Number(n));
-const round = n => Math.round(n * 10) / 10;
-
-function buildBullets(a, pf) {
+function buildBullets(mandMiss, expMiss, siteMiss) {
   const out = [];
-  if (pf.includes("no_social_proof")) out.push("Add 2–3 outcome-led case studies or link to reviews.");
-  if (pf.includes("privacy_missing")) out.push("Ensure a visible Privacy page in the footer.");
-  if (pf.includes("no_company_number")) out.push("Display registered company info to reassure public buyers.");
-  if (!a["dp_ukgdpr"]) out.push("Publish a UK GDPR + DPA 2018 policy with DPO/contact.");
-  if (!a["bcp_dr"]) out.push("Document Business Continuity & Disaster Recovery basics.");
-  if (!a["iso_27001"] && !a["ce_plus"]) out.push("Strengthen information security assurance (CE+ or ISO 27001).");
-  if (!a["modern_slavery"] && a["targets_public_sector"]) out.push("Publish a Modern Slavery statement and link it in the footer.");
+  // Mandatory
+  if (mandMiss.includes("has_insurance"))
+    out.push("Provide valid PLI (£5m), PI (£1–5m), and EL (£10m) insurance certificates.");
+  if (mandMiss.includes("dp_ukgdpr"))
+    out.push("Publish UK GDPR/Data Protection policy with contact/DPO.");
+  if (mandMiss.includes("bcp_dr"))
+    out.push("Create a simple Business Continuity & Disaster Recovery plan.");
+  if (mandMiss.includes("modern_slavery"))
+    out.push("Publish a Modern Slavery statement and link it in the footer.");
+  if (mandMiss.includes("whistleblowing"))
+    out.push("Publish a whistleblowing policy and reporting route.");
+
+  // Expected
+  if (expMiss.includes("iso_27001") && expMiss.includes("ce_plus_or_equiv"))
+    out.push("Strengthen information security assurance (CE+ or ISO 27001).");
+  if (expMiss.includes("case_studies"))
+    out.push("Add outcome-led case studies or references relevant to the public sector.");
+  if (expMiss.includes("registered_portals"))
+    out.push("Register on Contracts Finder and relevant eSourcing portals.");
+  if (expMiss.includes("crp_ppn"))
+    out.push("Publish a Carbon Reduction Plan aligned to UK PPN requirements.");
+
+  // Website
+  if (siteMiss.includes("Social proof"))
+    out.push("Link to testimonials or reviews to build trust.");
+  if (siteMiss.includes("Company details"))
+    out.push("Show registered company information in the footer.");
+
+  if (!out.length && siteMiss.length)
+    out.push("Improve footer hygiene (privacy, cookies, accessibility).");
+  if (!out.length)
+    out.push("Solid baseline — consider CE+/ISO signals and case studies.");
+
   return out;
 }
