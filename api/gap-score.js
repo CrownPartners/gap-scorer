@@ -1,5 +1,5 @@
 // /api/gap-score.js  — Compliance + Website Perception only (no carbon maths)
-// RAG reports errors only; exposes BOTH {large,medium,minor} AND legacy {red,amber,green}
+// RAG reports errors only; exposes BOTH {large,medium,minor} AND {high,medium,low}
 
 function allowOrigin(origin) {
   if (!origin) return null;
@@ -12,7 +12,7 @@ function allowOrigin(origin) {
 }
 
 export default async function handler(req, res) {
-  // ---- CORS (working baseline) ----
+  // ---- CORS ----
   const allow = allowOrigin(req.headers.origin);
   if (allow) { res.setHeader("Access-Control-Allow-Origin", allow); res.setHeader("Vary","Origin"); }
   res.setHeader("Access-Control-Allow-Methods","POST, OPTIONS");
@@ -28,7 +28,7 @@ export default async function handler(req, res) {
     const clamp = (x) => Math.max(0, Math.min(100, Math.round(x)));
     const { website, answers = {} } = req.body || {};
 
-    // ---------------- Compliance sets (unchanged) ----------------
+    // ---------------- Compliance sets ----------------
     const mandatory = [
       "insolvency_clear","tax_clear","no_convictions","has_insurance",
       "dp_ukgdpr","h_and_s","modern_slavery","anti_bribery","bcp_dr","edi","whistleblowing"
@@ -43,16 +43,16 @@ export default async function handler(req, res) {
     ];
     const socialValue = ["sv_employment","sv_community","sv_smes","sv_environment"]; // informational only
 
-    // ---------------- Compliance evaluation (no counting greens) ----------------
+    // ---------------- Compliance evaluation ----------------
     const missingMandatory = [];
     const missingExpected = [];
     const present = [];
 
     for (const k of mandatory) { if (answers[k]) present.push(k); else missingMandatory.push(k); }
     for (const k of expected)  { if (answers[k]) present.push(k); else missingExpected.push(k); }
-    // socialValue ignored for penalties
+    // socialValue ignored
 
-    // ---------------- Website perception (unchanged) ----------------
+    // ---------------- Website perception ----------------
     let perceptionPct = 45;
     const site = { present: [], missing: [] };
 
@@ -82,7 +82,6 @@ export default async function handler(req, res) {
     perceptionPct = clamp(perceptionPct);
 
     // ---------------- RAG (errors only) + Scoring ----------------
-    // Website: treat Accessibility & Cyber Essentials as "medium"; everything else "minor"
     const websiteMediumLabels = new Set(["Accessibility", "Cyber Essentials badge"]);
     let siteMedium = 0, siteMinor = 0;
     for (const lbl of site.missing) {
@@ -93,15 +92,15 @@ export default async function handler(req, res) {
     const medium = missingExpected.length + siteMedium;     // expected + key web
     const minor  = siteMinor;                               // other web hygiene
 
-    // Back-compat fields for your UI
+    // Output both: new scheme + "importance wording"
     const rag = {
-      large, medium, minor,
-      red:   large,   // legacy
-      amber: medium,  // legacy
-      green: minor    // legacy (repurposed: minor issues count)
+      large, medium, minor,    // raw counts
+      high: large,             // high-importance / hard to fix
+      mediumImportance: medium,// medium-importance
+      low: minor               // low-importance / quick wins
     };
 
-    // Compliance maths based on compliance gaps only
+    // Compliance maths
     const complianceBase = 100 - (missingMandatory.length * 12 + missingExpected.length * 4);
     const compliancePct = clamp(complianceBase);
 
@@ -118,7 +117,7 @@ export default async function handler(req, res) {
       overallPct,
       bandLabel,
       bullets,
-      rag,                    // has both new and legacy keys
+      rag,
       websiteFindings: site,
       nextStepUrl: "https://www.crownpartners.co.uk/contact"
     });
