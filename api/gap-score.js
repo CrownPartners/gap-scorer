@@ -203,6 +203,12 @@ return res.json({
   nextStepUrl: "https://www.crownpartners.co.uk/contact"
 });
 
+  } catch (e) {
+    return res.status(500).json({ error: "server_error" });
+  }
+} // 
+
+
 
 function buildBullets(mandMiss, expMiss, siteMiss) {
   const out = [];
